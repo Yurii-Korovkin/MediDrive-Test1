@@ -2,11 +2,10 @@ package repo_test
 
 import (
 	"context"
-	"testing"
-
 	"money-transfer/contracts"
 	"money-transfer/domain"
 	"money-transfer/repo"
+	"testing"
 )
 
 func TestRetrieve_NotFound(t *testing.T) {

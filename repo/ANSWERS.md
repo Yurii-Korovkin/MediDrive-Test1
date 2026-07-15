@@ -1,82 +1,57 @@
-## 1. Що відбувається, якщо `source.Withdraw()` успішний, а `dest.Deposit()` — ні?
+## 1. What happens if `source.Withdraw()` is successful, but `dest.Deposit()` is not?
 
-Розглянемо конкретний випадок (він же відтворений у тесті `TestExecute_SourceUntouchedWhenDestFails`): `source` має достатньо коштів, `dest` — заморожений рахунок (`AccountStatusFrozen`).
+Let's consider a specific case (also reproduced in the test `TestExecute_SourceUntouchedWhenDestFails`): `source` has enough funds, `dest` is a frozen account (`AccountStatusFrozen`).
 
-Покроково всередині `Execute`:
+Step by step inside `Execute`:
 
-- `source, _ := uc.repo.Retrieve(ctx, req.FromAccountID)` — отримуємо **свіжий, локальний** `*domain.Account`, ізольований від сховища (кожен виклик `Retrieve` повертає нову гідратовану копію).
-- `dest, _ := uc.repo.Retrieve(ctx, req.ToAccountID)` — так само, локальна копія.
-- `source.Withdraw(req.Amount)` — успішний. Це змінює **лише поля локальної Go-змінної `source`**: `source.balance` зменшується, `source.Changes` позначає `"balance"` як брудне поле. Жодного запису в сховище ще не було — ні репозиторій, ні коммітер не викликались.
-- `dest.Deposit(req.Amount)` — повертає `domain.ErrAccountNotActive`, оскільки рахунок заморожений. Функція одразу виконує `return nil, err`.
+- `source, _ := uc.repo.Retrieve(ctx, req.FromAccountID)` — we get a **fresh, local** `*domain.Account`, isolated from the repository (each call to `Retrieve` returns a new hydrated copy).
+- `dest, _ := uc.repo.Retrieve(ctx, req.ToAccountID)` — the same, a local copy.
+- `source.Withdraw(req.Amount)` — successful. This changes **only the fields of the local Go variable `source`**: `source.balance` is decremented, `source.Changes` marks `"balance"` as a dirty field. There has been no deposit yet — neither the repository nor the committer has been called.
+- `dest.Deposit(req.Amount)` — returns `domain.ErrAccountNotActive`, since the account is frozen. The function immediately executes `return nil, err`.
 
-**Точний стан після повернення з `Execute`:**
+**Exact state after `Execute` returns:**
 
-| Що | Стан |
+| What | State |
 |---|---|
-| Повернений `*Plan` | `nil` — жодна мутація ніколи не була створена (виконання не дійшло до `uc.repo.UpdateMut(...)`) |
-| Повернена помилка | `domain.ErrAccountNotActive` (unwrapped) |
-| Локальна змінна `source` у пам'яті виклику | Має зменшений `balance` і позначене брудне поле `"balance"` — але це проміжний, ефемерний Go-об'єкт, який буде знищено garbage collector'ом одразу після виходу з функції. Він ніколи нікуди не передавався. |
-| Реальний стан рахунку джерела у сховищі | **Абсолютно не змінився** — там, звідки `Retrieve` бере дані, як і раніше лежить оригінальний баланс |
-| Реальний стан рахунку призначення у сховищі | Не змінився взагалі — `Deposit` навіть не встиг доторкнутись до балансу, помилка стається до рядка `a.balance += amount` |
+| Returned `*Plan` | `nil` — no mutation was ever created (execution did not reach `uc.repo.UpdateMut(...)`) |
+| Returned error | `domain.ErrAccountNotActive` (unwrapped) |
+| Local variable `source` in memory of the call | It has a reduced `balance` and a dirty field `"balance"` marked — but this is an intermediate, ephemeral Go object that will be destroyed by the garbage collector immediately after the function exits. It was never passed anywhere. |
+| The real state of the source account in the repository | **Absolutely unchanged** — where `Retrieve` takes the data from, the original balance still lies |
+| The real state of the destination account in the repository | Not changed at all — `Deposit` didn't even have time to touch the balance, the error occurs at the line `a.balance += amount` |
 
-Це і є головна перевага патерну "repository повертає мутації, а не застосовує": оскільки нічого не комітиться, доки повний `Plan` не зібраний і явно не переданий у `Committer.Apply` на рівні сервісу, невдача **всередині доменної логіки** ніколи не може лишити часткового стану в сховищі — немає проміжного "небезпечного" persisted-стану, на відміну від buggy-коду, де окремі виклики `Apply` реально рухали гроші в БД одна за одною.
+This is the main advantage of the "repository returns mutations, not applies" pattern: since nothing is committed until the full `Plan` is assembled and explicitly passed to `Committer.Apply` at the service level, a failure **inside the domain logic** can never leave a partial state in the repository — there is no intermediate "dangerous" persisted state, unlike buggy code, where individual `Apply` calls actually moved money into the database one after another.
 
 ---
 
-## 2. Чому buggy-код застосовує мутації по одній — і чому це проблема?
+## 2. Why does buggy code apply mutations one by one — and why is this a problem?
 
 ```go
 if err := uc.db.Apply(mutation1); err != nil { return err }
 if err := uc.db.Apply(mutation2); err != nil { return err }
 ```
 
-`Apply(mutation1)` і `Apply(mutation2)` — це два повністю незалежних виклики, не об'єднаних жодною транзакцією. Немає механізму "відкотити" `mutation1`, якщо `mutation2` не вдасться.
+`Apply(mutation1)` and `Apply(mutation2)` are two completely independent calls, not connected by any transaction. There is no mechanism to "roll back" `mutation1` if `mutation2` fails.
 
-**Конкретний сценарій відмови:**
+**Specific failure scenario:**
 
-- `mutation1` (списання $50 з рахунку A) успішно застосовується — гроші реально зникли з рахунку A в базі даних.
-- Перед викликом `Apply(mutation2)` стається збій: тимчасова втрата з'єднання з БД, конкурентний процес встиг видалити/заблокувати рахунок B, перевищено таймаут транзакції, тощо.
-- `Apply(mutation2)` повертає помилку. Функція одразу `return err` — **без жодної спроби компенсувати** вже застосовану `mutation1`.
+- `mutation1` (debiting $50 from account A) is successfully applied — the money has actually disappeared from account A in the database.
+- Before calling `Apply(mutation2)`, a failure occurs: temporary loss of connection to the database, a competing process managed to delete/lock account B, transaction timeout was exceeded, etc.
+- `Apply(mutation2)` returns an error. The function immediately `return err` — **without any attempt to compensate** for the already applied `mutation1`.
 
-**Результат: $50 списано з рахунку A і ніколи не зараховано на рахунок B — гроші просто зникли** з системи. Це гірше за подвійне зарахування (яке хоча б помітне за надлишком коштів) — тут баланс системи стає меншим, ніж мав бути, і без ручного аудиту трансакцій цю розбіжність узагалі складно виявити.
+**Result: $50 was debited from account A and never credited to account B — the money simply disappeared** from the system. This is worse than double-entry (which is at least noticeable by the excess funds) — here the system balance becomes less than it should have been, and without manual auditing of transactions, this discrepancy is generally difficult to detect.
 
-**Чому це проблема архітектурно:** дві мутації, що логічно є однією бізнес-операцією (переказ), повинні застосовуватись як єдина атомарна одиниця — або обидві, або жодна. Саме тому в правильній реалізації `Committer.Apply` приймає весь `*Plan` одним викликом і сам гарантує atomicity (в цьому проекті — через двофазний підхід: спершу перевірити існування всіх цільових рядків під єдиним локом, потім застосувати всі мутації; жодна мутація не застосовується, якщо хоч одна з інших не може бути застосована — див. `InMemoryCommitter.Apply` і тест `TestCommitter_RejectsPlanWithUnknownRow`).
-
----
-
-## 3. Чому dirty-fields-only важливо для конкурентних оновлень?
-
-Якщо `UpdateMut` завжди включає в мутацію лише реально змінені поля (а не весь рядок цілком), кожна операція торкається **виключно тих колонок, за які вона є джерелом істини**, залишаючи всі інші поля некерованими цією операцією взагалі.
-
-**Конкретний сценарій без цього захисту:** уявімо, що `UpdateMut` завжди повертав би і `balance`, і `status`, незалежно від того, що реально змінилось.
-
-- Горутина A викликає `TransferMoney`: отримує рахунок, викликає `Withdraw` (змінюється лише `balance`), формує мутацію.
-- **Одночасно**, окремим потоком, горутина B виконує операцію "заморозити рахунок за підозрою в шахрайстві" — змінює лише `status` з `active` на `frozen`, і її мутація застосовується **між** тим, як горутина A прочитала рахунок, і тим, як мутація горутини A була застосована.
-- Якщо мутація горутини A завжди включає `status` (застаріле значення `active`, яке було в її локальній копії на момент `Retrieve`), застосування цієї мутації **перезапише** щойно встановлений `status: frozen` назад на `active` — рахунок розморозиться сам собою, хоча операція A взагалі не мала жодного відношення до статусу.
-
-Це класична проблема **lost update** (втраченого оновлення) через перезапис цілого рядка замість лише змінених колонок. Обмеження мутації лише брудними полями гарантує, що конкурентні, незалежні зміни різних колонок того самого рядка можуть співіснувати безпечно — подібно до column-level locking / optimistic concurrency на рівні окремих полів, а не всього рядка.
+**Why this is a problem architecturally:** Two mutations that logically constitute one business operation (a transfer) must be applied as a single atomic unit — either both or neither. That is why, in a correct implementation, `Committer.Apply` accepts the entire `*Plan` in a single call and guarantees atomicity itself (in this project, through a two-phase approach: first check the existence of all target rows under a single lock, then apply all mutations; no mutation is applied if at least one of the others cannot be applied — see `InMemoryCommitter.Apply` and the `TestCommitter_RejectsPlanWithUnknownRow` test).
 
 ---
 
-## 4: Яку проблему створює підхід "завжди всі поля" (з питання)?
+## 3. Why is dirty-fields-only important for competitive updates?
 
-```go
-func (r *AccountRepo) UpdateMut(account *domain.Account) *Mutation {
-    return &Mutation{
-        Updates: map[string]interface{}{
-            "balance": account.Balance(),
-            "status":  account.Status(),  // Always include all fields
-        },
-    }
-}
-```
+If `UpdateMut` always includes only the actually changed fields in the mutation (and not the entire row), each operation affects **only those columns for which it is the source of truth**, leaving all other fields unmanaged by this operation at all.
 
-Це той самий lost-update сценарій, описаний у Q3, але узагальнений на рівень самої реалізації `UpdateMut`: незалежно від того, яка саме доменна операція викликала цю мутацію (`Withdraw`, що торкається лише `balance`, чи щось інше), результуюча мутація **завжди** перезаписує і `status` теж — значенням, яке було в об'єкті `account` на момент його завантаження, а не поточним значенням у сховищі на момент застосування мутації.
+**A specific scenario without this protection:** imagine that `UpdateMut` would always return both `balance` and `status`, regardless of what actually changed.
 
-Наслідки:
+- Goroutine A calls `TransferMoney`: gets the account, calls `Withdraw` (only `balance` changes), generates a mutation.
 
-- **Втрата конкурентних змін** — будь-яка інша операція, що встигла змінити `status` (або будь-яке інше поле, включене "про всяк випадок") між `Retrieve` і `Apply` цієї мутації, буде мовчки затерта.
-- **Неможливо відрізнити "поле навмисно встановлено в поточне значення" від "поле взагалі не чіпали"** — що важливо для аудиту, event sourcing, чи тригерів у БД, які реагують на зміну конкретної колонки (наприклад, тригер "надіслати email при зміні статусу" спрацював би навіть тоді, коли статус фактично не змінювався).
-- **Більші, менш ефективні записи** — кожна мутація завжди зачіпає всі колонки, навіть якщо 99% операцій змінюють лише одне поле, що для реальної БД означає зайве навантаження на запис і зайві записи в журнал змін/audit log.
+- **At the same time**, in a separate thread, goroutine B performs the operation "freeze account due to suspected fraud" - changes only `status` from `active` to `frozen`, and its mutation is applied **between** when goroutine A read the account and when goroutine A's mutation was applied.
 
-Dirty-fields-only підхід (через `domain.ChangeTracker`) уникає всього цього: мутація описує рівно те, що реально змінилось, і нічого більше.
+- If goroutine A's mutation always includes `status` (the outdated value of `active` that was in its local copy at the time of `Retrieve`), the application

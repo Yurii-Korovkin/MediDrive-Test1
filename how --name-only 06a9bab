@@ -1,0 +1,19 @@
+* [33md190846[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m Final version!
+* [33m06a9bab[m Almost final version
+* [33mc1b030d[m Coverage account repository with tests
+* [33m7f21fca[m Added main for normal start a program
+* [33ma6482a0[m Change location directory interactor_test
+* [33mb14740a[m Create Commiter for  Repository
+* [33ma742241[m Create Account Repository
+* [33mec0f125[m Create common condition named store
+* [33me973c4c[m Covered interactor tests
+* [33m16b1277[m Covered interactor tests
+* [33m7d7337a[m Initial function and constructor with types , for bussiness scenario
+* [33mc946a72[m Initial all needed function and wrote comments for repository
+* [33mb08c43d[m Initial types for repository
+* [33m5aeda55[m Developed logic and refactoring domain remaining functions
+* [33mce22662[m Developed logic domain function Withdraw and Deposit
+* [33m2f883fb[m Initial domain function Account
+* [33m6ab13ff[m Initial domain function ChangeTracker
+* [33m9afd3c2[m Initial Repository
+* [33m7c4ac74[m Initial domain entity

@@ -65,7 +65,7 @@ if err := uc.db.Apply(mutation2); err != nil { return err }
 
 - **Code:** `Updates: map[string]interface{}{"balance": source.balance}` — is manually generated every time.
 - **What happens:** the mutation always explicitly lists only `balance`, because the code is manually written for this specific case — but there is no general mechanism that would guarantee that **only** the fields that were actually changed are included in the mutation. If this same template is copied into another operation that also touches `status`, there is nothing to prevent accidentally including an outdated value of a field that was not actually changed.
-- **Production scenario:** see `Q3`/`Q4` in ANSWERS.md — a concurrent operation that changes only `status` risks being overwritten by an operation without tracking dirty fields.
+- **Production scenario:** see `Qestion 3`and `Question 4` in ANSWERS.md — a concurrent operation that changes only `status` risks being overwritten by an operation without tracking dirty fields.
 - **Fix approach:** `ChangeTracker` on the domain entity, which `Withdraw`/`Deposit` mark (`Mark("balance")`), and `UpdateMut` reads (`Changes.Fields()`) to include only the actually changed columns in the mutation.
 
 ## Bug 8: `Execute` signature does not meet the architecture requirement

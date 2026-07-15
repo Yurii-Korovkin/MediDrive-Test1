@@ -1,7 +1,9 @@
-type AccountRepository interface {
-	Retrieve(ctx context.Context, id AccountID) (*Account, error)
-	UpdateMut(account *Account) *Mutation // Returns mutation, doesn't apply
-}
+package contracts
+
+import (
+	"context"
+	"money-transfer/domain"
+)
 
 type Mutation struct {
 	Table   string
@@ -13,9 +15,11 @@ type Plan struct {
 	mutations []*Mutation
 }
 
-func NewPlan() *Plan { return &Plan{} }
-func (p *Plan) Add(m *Mutation) {
-	if m != nil {
-		p.mutations = append(p.mutations, m)
-	}
+type AccountRepository interface {
+	Retrieve(ctx context.Context, id domain.AccountID) (*domain.Account, error)
+	UpdateMut(account *domain.Account) *Mutation
+}
+
+type Committer interface {
+	Apply(ctx context.Context, plan *Plan) error
 }

@@ -7,11 +7,23 @@ var (
 )
 
 const (
-	// AccountStatusActive indicates that the account is active and can be used for transactions.
 	AccountStatusActive AccountStatus = "active"
-	// AccountStatusInactive indicates that the account is inactive and cannot be used for transactions.
-	AccountStatusInactive AccountStatus = "inactive"
+	AccountStatusFrozen AccountStatus = "frozen"
+	AccountStatusClosed AccountStatus = "closed"
 )
+
+type ChangeTracker struct {
+	dirty map[string]struct{}
+}
+
+func (c *ChangeTracker) Mark(field string) {}
+
+func (c *ChangeTracker) IsDirty(field string) bool {}
+
+func (c *ChangeTracker) Fields() []string {}
+
+// Any reports anything has changed at all
+func (c *ChangeTracker) Any() bool {}
 
 type Account struct {
 	id      AccountID
@@ -20,6 +32,15 @@ type Account struct {
 	Changes ChangeTracker
 }
 
+func NewAccount(id AccountID, balance int64, status AccountStatus) *Account {
+	return &Account{id: id, balance: balance, status: status}
+}
+func (a *Account) ID() AccountID         { return a.id }
+func (a *Account) Balance() int64        { return a.balance }
+func (a *Account) Status() AccountStatus { return a.status }
+
 func (a *Account) Withdraw(amount int64) error // You implement
 func (a *Account) Deposit(amount int64) error
+
+
 

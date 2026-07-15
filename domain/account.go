@@ -39,8 +39,31 @@ func (a *Account) ID() AccountID         { return a.id }
 func (a *Account) Balance() int64        { return a.balance }
 func (a *Account) Status() AccountStatus { return a.status }
 
-func (a *Account) Withdraw(amount int64) error // You implement
-func (a *Account) Deposit(amount int64) error
+func (a *Account) Withdraw(amount int64) error {
+	if amount <= 0 {
+		return ErrInvalidAmount
+	}
+	if a.status != AccountStatusActive {
+		return ErrAccountNotActive
+	}
+	if a.balance < amount {
+		return ErrInsufficientFunds
+	}
+	a.balance -= amount
+	a.Changes.Mark("balance")
+	return nil
+}
 
-
+// You implement
+func (a *Account) Deposit(amount int64) error {
+	if amount <= 0 {
+		return ErrInvalidAmount
+	}
+	if a.status != AccountStatusActive {
+		return ErrAccountNotActive
+	}
+	a.balance += amount
+	a.Changes.Mark("balance")
+	return nil
+}
 
